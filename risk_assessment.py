@@ -513,20 +513,28 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
     out.append(f"<div class='subtle' style='margin-top:8px'>"
                f"现金可撑 {p['months_of_cash']:.0f} 个月（约 {p['months_of_cash']/12:.1f} 年）</div></div>")
 
-    # 仓位模拟（交互式）
-    out.append("<div class='card'><h2 style='margin-top:0'>仓位模拟</h2>")
-    out.append("<div style='margin-bottom:10px;font-size:13px;color:#515154'>"
-               "调仓金额（万元，正=加仓，负=减仓，空格分隔，回车更新）</div>")
-    default_input = " ".join(f"{a:g}" for a in sim_amounts) if sim_amounts else "-20 -10 -5 5 10 20"
-    out.append(f"<input id='simInput' value='{default_input}' "
-               "style='width:60%;padding:8px 12px;border:1px solid #d2d2d7;"
-               "border-radius:8px;font-size:14px;font-family:monospace' />")
-    out.append(" <button onclick='renderSim()' "
-               "style='padding:8px 18px;background:#0071e3;color:#fff;border:none;"
-               "border-radius:8px;font-size:14px;cursor:pointer'>更新</button>")
-    out.append("<div id='simTable' style='margin-top:14px'></div>")
-    out.append("<div class='subtle' style='margin-top:6px'>"
-               "盈亏 = 当前实时盈亏 + 场景变化（暴露 × 涨跌%）</div></div>")
+    # 仓位模拟（拖动滑块）
+    out.append("""
+<div class='card'>
+  <h2 style='margin-top:0'>仓位模拟</h2>
+  <div style='display:flex;align-items:center;gap:16px;margin-bottom:14px;flex-wrap:wrap'>
+    <div style='font-size:13px;color:#515154;min-width:80px'>调仓金额</div>
+    <input id='simSlider' type='range' min='-50' max='50' step='0.5' value='10'
+           style='flex:1;min-width:280px;accent-color:#0071e3'/>
+    <div id='simLabel' style='min-width:110px;font-size:15px;font-weight:600;
+         color:#0071e3;font-variant-numeric:tabular-nums'></div>
+  </div>
+  <div style='display:flex;gap:8px;font-size:12px;color:#86868b;margin:-8px 0 14px'>
+    <span>减仓50万</span><span style='flex:1'></span>
+    <span>当前</span><span style='flex:1'></span>
+    <span>加仓50万</span>
+  </div>
+  <div id='simTable'></div>
+  <div class='subtle' style='margin-top:6px'>
+    盈亏 = 当前实时盈亏 + 场景变化（暴露 × 涨跌%）
+  </div>
+</div>
+""")
 
     # 嵌入数据 + JS
     data_js = json.dumps({
@@ -543,49 +551,45 @@ function fmtPL(v) {
   const cls  = v > 0 ? 'pos' : v < 0 ? 'neg' : '';
   return `<td class="${cls}">${sign}${(v/10000).toFixed(1)}万</td>`;
 }
-function fmtVal(v, unit='万') {
-  return `<td>${(v/10000).toFixed(1)}${unit}</td>`;
+function fmtVal(v) {
+  return `<td>${(v/10000).toFixed(1)}万</td>`;
 }
 function renderSim() {
-  const raw = document.getElementById('simInput').value.trim();
-  const amts = raw ? raw.split(/\s+/).map(parseFloat).filter(x => !isNaN(x)) : [];
-  amts.sort((a,b) => a-b);
-  const all = [0, ...amts];
-  const labels = all.map(a => a === 0 ? '当前' : (a < 0 ? '减仓' : '加仓') + Math.abs(a) + '万');
+  const a = parseFloat(document.getElementById('simSlider').value);
+  const label = a === 0 ? '当前'
+              : (a < 0 ? '减仓 ' : '加仓 ') + Math.abs(a).toFixed(1) + ' 万';
+  document.getElementById('simLabel').textContent = label;
+
+  const cols = [0, a];                   // 当前 vs 模拟
+  const labels = ['当前', label];
 
   let html = '<table><tr><th>指标</th>';
-  all.forEach((a, i) => {
-    const cls = a === 0 ? 'current' : '';
+  cols.forEach((c, i) => {
+    const cls = c === 0 ? 'current' : '';
     html += `<th class="${cls}">${labels[i]}</th>`;
   });
   html += '</tr>';
 
-  // 有效纳指暴露
   html += '<tr><td>有效纳指暴露</td>';
-  all.forEach(a => { html += fmtVal(D.exp + a*10000); });
+  cols.forEach(c => { html += fmtVal(D.exp + c*10000); });
   html += '</tr>';
 
-  // 杠杆倍数
   html += '<tr><td>杠杆倍数</td>';
-  all.forEach(a => { html += `<td>${((D.exp + a*10000)/D.eq).toFixed(2)}x</td>`; });
+  cols.forEach(c => { html += `<td>${((D.exp + c*10000)/D.eq).toFixed(2)}x</td>`; });
   html += '</tr>';
 
-  // 跌幅
   D.down_pcts.forEach(dn => {
     html += `<tr><td>跌${dn}%</td>`;
-    all.forEach(a => {
-      const total = D.base_ret + (D.exp + a*10000) * (-dn/100);
-      html += fmtPL(total);
+    cols.forEach(c => {
+      html += fmtPL(D.base_ret + (D.exp + c*10000) * (-dn/100));
     });
     html += '</tr>';
   });
 
-  // 涨幅
   D.up_pcts.forEach(up => {
     html += `<tr><td>涨${up}%</td>`;
-    all.forEach(a => {
-      const total = D.base_ret + (D.exp + a*10000) * (up/100);
-      html += fmtPL(total);
+    cols.forEach(c => {
+      html += fmtPL(D.base_ret + (D.exp + c*10000) * (up/100));
     });
     html += '</tr>';
   });
@@ -593,9 +597,8 @@ function renderSim() {
   html += '</table>';
   document.getElementById('simTable').innerHTML = html;
 }
-document.getElementById('simInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') renderSim();
-});
+const slider = document.getElementById('simSlider');
+slider.addEventListener('input', renderSim);
 renderSim();
 """)
     out.append("</script>")
