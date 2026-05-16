@@ -164,6 +164,10 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
     location_value: dict[str, float] = {}
     # location → [(addedAt, value_cny), ...] 用于校准后过滤新增资产
     location_assets: dict[str, list[tuple[int, float]]] = {}
+    # 聚合后的持仓明细（用于调仓模拟）。key = (location, symbol, market, beta)
+    stock_agg: dict[tuple, dict] = {}
+    # 每个账户的总资产（含现金）
+    location_total: dict[str, float] = {}
 
     for a in data["assets"]:
         raw   = a["quantity"] * a["currentPrice"]
@@ -172,9 +176,10 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
         value = raw * mult
         total_cny += value
 
-        loc = a.get("location", "")
+        loc = a.get("location", "") or "未指定账户"
         location_value[loc] = location_value.get(loc, 0.0) + value
         location_assets.setdefault(loc, []).append((a.get("addedAt") or 0, value))
+        location_total[loc] = location_total.get(loc, 0.0) + value
 
         atype = a["assetType"]
         if atype == "cash":
@@ -186,7 +191,27 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
             beta = type_beta.get(atype, 0.0)
         if beta is None:
             beta = 0.0
-        nasdaq_exp += value * float(beta)
+        beta = float(beta)
+        nasdaq_exp += value * beta
+
+        sym = (a.get("symbol") or "").strip()
+        key = (loc, sym, mkt, beta)
+        if key not in stock_agg:
+            stock_agg[key] = {
+                "location": loc,
+                "name":   a.get("name") or sym or "?",
+                "symbol": sym,
+                "market": mkt,
+                "beta":   beta,
+                "value":  0.0,
+            }
+        stock_agg[key]["value"] += value
+
+    # 按账户总资产降序、账户内按持仓降序
+    assets_detail = sorted(
+        stock_agg.values(),
+        key=lambda x: (-location_total.get(x["location"], 0), x["location"], -x["value"]),
+    )
 
     total_debt = 0.0
     loan_details = []
@@ -277,6 +302,8 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
         "return_details":  return_details,
         "total_return":    total_return,
         "last_cal_ts":     last_cal_ts,
+        "assets_detail":   assets_detail,
+        "location_total":  location_total,
     }
 
 # ── 风险评分 ──────────────────────────────────────────────────────────────────
@@ -403,6 +430,7 @@ th,td{padding:8px 10px;text-align:right;border-bottom:1px solid #f0f0f3}
 th{background:#fafafc;font-weight:500;color:#515154}
 td:first-child,th:first-child{text-align:left}
 tr.current td{background:#fffceb;font-weight:600}
+tr.alert td{background:#fff4f4;font-weight:600}
 .pos{color:#0a8a3a}
 .neg{color:#d70015}
 .risk{display:inline-block;padding:3px 10px;border-radius:8px;font-weight:600;font-size:13px}
@@ -414,6 +442,12 @@ tr.current td{background:#fffceb;font-weight:600}
 .kv span:nth-child(odd){color:#86868b}
 .kv span:nth-child(even){font-weight:500}
 .subtle{color:#86868b;font-size:11px}
+.tabs{display:flex;gap:4px;margin:6px 0 18px;border-bottom:1px solid #d2d2d7}
+.tab-btn{padding:10px 18px;font-size:14px;background:none;border:none;cursor:pointer;
+        color:#515154;border-bottom:2px solid transparent;margin-bottom:-1px;font-weight:500}
+.tab-btn.active{color:#0071e3;border-bottom-color:#0071e3}
+.tab-pane{display:none}
+.tab-pane.active{display:block}
 """
 
 def _cls(v: float) -> str:
@@ -430,6 +464,11 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
            f"<title>持仓风险评估报告 {now}</title><style>{HTML_CSS}</style></head><body>"]
     out.append(f"<h1>持仓风险评估报告</h1>")
     out.append(f"<div class='meta'>{now}　·　USD {fx['USD']:.2f}　HKD {fx['HKD']:.4f}</div>")
+    out.append("<div class='tabs'>"
+               "<button class='tab-btn active' data-tab='1'>风险报告</button>"
+               "<button class='tab-btn' data-tab='2'>调仓模拟</button>"
+               "</div>")
+    out.append("<div id='pane-1' class='tab-pane active'>")
 
     # 持仓快照
     out.append("<div class='card'><h2 style='margin-top:0'>持仓快照</h2><div class='kv'>")
@@ -495,7 +534,8 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
         new_eq = eq - exp * dn / 100
         chg    = (new_eq / eq - 1) * 100
         total  = base_ret + (new_eq - eq)
-        out.append(f"<tr><td>跌{dn}%</td><td>{new_eq/10000:.1f}万</td>"
+        cls    = "alert" if dn in (20, 30) else ""
+        out.append(f"<tr class='{cls}'><td>跌{dn}%</td><td>{new_eq/10000:.1f}万</td>"
                    f"<td class='neg'>{chg:.1f}%</td>{_td_num(total)}</tr>")
     out.append("</table></div>")
 
@@ -504,7 +544,7 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
 <div class='card'>
   <h2 style='margin-top:0'>仓位模拟</h2>
   <div style='display:flex;align-items:center;gap:16px;margin-bottom:14px;flex-wrap:wrap'>
-    <div style='font-size:13px;color:#515154;min-width:80px'>调仓金额</div>
+    <div style='font-size:13px;color:#515154;min-width:120px'>调仓金额<br><span class='subtle'>非实际仓位<br>= β 加权后的有效纳指暴露</span></div>
     <input id='simSlider' type='range' min='-50' max='50' step='0.5' value='10'
            style='flex:1;min-width:280px;accent-color:#0071e3'/>
     <div id='simLabel' style='min-width:110px;font-size:15px;font-weight:600;
@@ -522,7 +562,7 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
 </div>
 """)
 
-    # 月供压力（放在仓位模拟之后）
+    # 月供压力（pane-1 最后一块）
     out.append("<div class='card'><h2 style='margin-top:0'>贷款月供压力</h2>")
     out.append("<table><tr><th>贷款</th><th>剩余本金</th><th>月供</th></tr>")
     for ld in p["loan_details"]:
@@ -536,6 +576,40 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
     out.append(f"<div class='subtle' style='margin-top:8px'>"
                f"现金可撑 {p['months_of_cash']:.0f} 个月（约 {p['months_of_cash']/12:.1f} 年）</div></div>")
 
+    # pane-1 结束，pane-2 开始：调仓模拟
+    out.append("</div><div id='pane-2' class='tab-pane'>")
+    out.append("""
+<div class='card'>
+  <h2 style='margin-top:0'>调仓模拟</h2>
+  <div class='subtle' style='margin-bottom:10px'>
+    每行输入调整金额（万元，正=加仓 / 负=减仓），从现金里扣减。
+    可点击下方按钮新增标的。
+  </div>
+  <table id='rebalTable'>
+    <thead><tr>
+      <th>名称</th><th>市场</th><th>β</th>
+      <th style='text-align:right'>当前 (万)</th>
+      <th style='text-align:right'>调整 (万)</th>
+      <th style='text-align:right'>调整后 (万)</th>
+    </tr></thead>
+    <tbody id='rebalBody'></tbody>
+  </table>
+  <button id='rebalAdd' style='margin-top:10px;padding:6px 14px;font-size:13px;
+          border:1px solid #d2d2d7;border-radius:8px;background:#f5f5f7;cursor:pointer'>
+    + 新增标的
+  </button>
+  <button id='rebalReset' style='margin-top:10px;margin-left:6px;padding:6px 14px;font-size:13px;
+          border:1px solid #d2d2d7;border-radius:8px;background:#fff;cursor:pointer'>
+    重置
+  </button>
+  <h3 style='margin:18px 0 8px;font-size:15px'>调仓后指标</h3>
+  <div id='rebalKv' class='kv'></div>
+  <h3 style='margin:18px 0 8px;font-size:15px'>调仓后压力测试</h3>
+  <table id='rebalStress'></table>
+</div>
+</div>
+""")
+
     # 嵌入数据 + JS
     data_js = json.dumps({
         "eq":       eq,
@@ -543,8 +617,22 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
         "base_ret": base_ret,
         "up_pcts":  UP_PCTS,
         "down_pcts": DOWN_PCTS,
-    })
+        "cash":     p["cash_cny"],
+        "debt":     p["total_debt"],
+        "total":    p["total_cny"],
+        "assets":   p["assets_detail"],
+        "loc_total": p["location_total"],
+    }, ensure_ascii=False)
     out.append(f"<script>const D={data_js};\n")
+    out.append(r"""
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const t = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab===t));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id==='pane-'+t));
+  });
+});
+""")
     out.append(r"""
 function fmtPL(v) {
   const sign = v >= 0 ? '+' : '';
@@ -557,49 +645,219 @@ function fmtVal(v) {
 function renderSim() {
   const a = parseFloat(document.getElementById('simSlider').value);
   const label = a === 0 ? '当前'
-              : (a < 0 ? '减仓 ' : '加仓 ') + Math.abs(a).toFixed(1) + ' 万';
+              : (a < 0 ? '减仓 ' : '加仓 ') + Math.abs(a).toFixed(1) + ' 万 (有效纳指暴露)';
   document.getElementById('simLabel').textContent = label;
 
-  const cols = [0, a];                   // 当前 vs 模拟
-  const labels = ['当前', label];
+  const newExp = D.exp + a*10000;
+  const newLev = D.eq > 0 ? newExp / D.eq : 0;
 
-  let html = '<table><tr><th>指标</th>';
-  cols.forEach((c, i) => {
-    const cls = c === 0 ? 'current' : '';
-    html += `<th class="${cls}">${labels[i]}</th>`;
-  });
-  html += '</tr>';
+  let html = `<div class='kv' style='margin-bottom:12px'>`
+    + `<span>有效纳指暴露</span><span>${(newExp/10000).toFixed(1)}万`
+    + (a!==0 ? ` <span class='subtle'>(当前 ${(D.exp/10000).toFixed(1)}万)</span>` : '')
+    + `</span>`
+    + `<span>杠杆倍数</span><span>${newLev.toFixed(2)}x`
+    + (a!==0 ? ` <span class='subtle'>(当前 ${(D.exp/D.eq).toFixed(2)}x)</span>` : '')
+    + `</span></div>`;
 
-  html += '<tr><td>有效纳指暴露</td>';
-  cols.forEach(c => { html += fmtVal(D.exp + c*10000); });
-  html += '</tr>';
-
-  html += '<tr><td>杠杆倍数</td>';
-  cols.forEach(c => { html += `<td>${((D.exp + c*10000)/D.eq).toFixed(2)}x</td>`; });
-  html += '</tr>';
-
-  D.down_pcts.forEach(dn => {
-    html += `<tr><td>跌${dn}%</td>`;
-    cols.forEach(c => {
-      html += fmtPL(D.base_ret + (D.exp + c*10000) * (-dn/100));
-    });
-    html += '</tr>';
-  });
-
+  function plCell(v) {
+    const s = v>=0?'+':''; const cl = v>0?'pos':v<0?'neg':'';
+    return `<td class='${cl}'>${s}${(v/10000).toFixed(1)}万</td>`;
+  }
+  html += '<table><tr><th>场景</th><th>净资产</th><th>净资产变化%</th><th>实时总盈亏</th></tr>';
   D.up_pcts.forEach(up => {
-    html += `<tr><td>涨${up}%</td>`;
-    cols.forEach(c => {
-      html += fmtPL(D.base_ret + (D.exp + c*10000) * (up/100));
-    });
-    html += '</tr>';
+    const newEq = D.eq + newExp * up/100;
+    const chg   = (newEq/D.eq - 1)*100;
+    const pl    = D.base_ret + (newEq - D.eq);
+    html += `<tr><td>涨${up}%</td><td>${(newEq/10000).toFixed(1)}万</td>`
+         + `<td class='pos'>+${chg.toFixed(1)}%</td>${plCell(pl)}</tr>`;
   });
-
+  const curPL = D.base_ret;
+  html += `<tr class='current'><td>当前</td><td>${(D.eq/10000).toFixed(1)}万</td><td>—</td>${plCell(curPL)}</tr>`;
+  D.down_pcts.forEach(dn => {
+    const newEq = D.eq - newExp * dn/100;
+    const chg   = (newEq/D.eq - 1)*100;
+    const pl    = D.base_ret + (newEq - D.eq);
+    const ac    = (dn===20||dn===30) ? 'alert' : '';
+    html += `<tr class='${ac}'><td>跌${dn}%</td><td>${(newEq/10000).toFixed(1)}万</td>`
+         + `<td class='neg'>${chg.toFixed(1)}%</td>${plCell(pl)}</tr>`;
+  });
   html += '</table>';
   document.getElementById('simTable').innerHTML = html;
 }
 const slider = document.getElementById('simSlider');
 slider.addEventListener('input', renderSim);
 renderSim();
+
+// ───── 调仓模拟 ─────
+const MKT_LABEL = {cn:'A股', us:'美股', hk:'港股', crypto:'加密'};
+// 深拷贝初始持仓，再加一个虚拟的新增数组
+const rebalRows = D.assets.map(a => ({
+  location:a.location, name:a.name, symbol:a.symbol, market:a.market,
+  beta:a.beta, base:a.value, delta:0, isNew:false
+}));
+function fmtWan(v, sign){
+  const s = (sign && v>0 ? '+' : '') + (v/10000).toFixed(2);
+  return s;
+}
+function cls(v){ return v>0?'pos':v<0?'neg':''; }
+
+function buildRebalTable(){
+  const body = document.getElementById('rebalBody');
+  body.innerHTML = '';
+
+  // 按 location 分组（保持顺序：D.assets 已按账户总资产排序）
+  const byLoc = new Map();
+  rebalRows.forEach((r, i) => {
+    if (!byLoc.has(r.location)) byLoc.set(r.location, []);
+    byLoc.get(r.location).push(i);
+  });
+
+  byLoc.forEach((idxs, loc) => {
+    const baseTotal = D.loc_total[loc] || 0;
+    const head = document.createElement('tr');
+    head.innerHTML = `
+      <td colspan='3' style='background:#fafafc;font-weight:600;color:#1d1d1f;font-size:13px'>
+        ${loc}
+      </td>
+      <td colspan='3' style='background:#fafafc;text-align:right;font-size:12px;color:#515154'>
+        账户总资产 ${fmtWan(baseTotal,false)} 万
+      </td>
+    `;
+    body.appendChild(head);
+
+    idxs.forEach(i => {
+      const r = rebalRows[i];
+      const tr = document.createElement('tr');
+      if (r.isNew) {
+        tr.innerHTML = `
+          <td style='padding-left:22px'><input data-i='${i}' data-f='name' value='${r.name}' style='width:90px'/></td>
+          <td>
+            <select data-i='${i}' data-f='market' style='font-size:13px'>
+              <option value='cn' ${r.market==='cn'?'selected':''}>A股</option>
+              <option value='us' ${r.market==='us'?'selected':''}>美股</option>
+              <option value='hk' ${r.market==='hk'?'selected':''}>港股</option>
+            </select>
+          </td>
+          <td><input data-i='${i}' data-f='beta' type='number' step='any' value='${r.beta}' style='width:55px'/></td>
+          <td style='text-align:right'>—</td>
+          <td style='text-align:right'>
+            <input data-i='${i}' data-f='delta' type='number' step='any' value='${r.delta}' style='width:90px;text-align:right'/>
+          </td>
+          <td data-after='${i}' style='text-align:right'></td>
+        `;
+      } else {
+        tr.innerHTML = `
+          <td style='padding-left:22px'>${r.name}${r.symbol?` <span class='subtle'>${r.symbol}</span>`:''}</td>
+          <td>${MKT_LABEL[r.market]||r.market}</td>
+          <td>${r.beta.toFixed(2)}</td>
+          <td style='text-align:right'>${fmtWan(r.base,false)}</td>
+          <td style='text-align:right'>
+            <input data-i='${i}' data-f='delta' type='number' step='any' value='${r.delta}' style='width:90px;text-align:right'/>
+          </td>
+          <td data-after='${i}' style='text-align:right'></td>
+        `;
+      }
+      body.appendChild(tr);
+    });
+  });
+  // 绑定输入：不重建表格，只增量更新
+  body.querySelectorAll('input,select').forEach(el => {
+    const evt = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(evt, e => {
+      const i = +e.target.dataset.i, f = e.target.dataset.f;
+      const v = e.target.value;
+      if (f === 'delta' || f === 'beta') rebalRows[i][f] = parseFloat(v)||0;
+      else rebalRows[i][f] = v;
+      recomputeRebal();
+    });
+  });
+  recomputeRebal();
+}
+
+function recomputeRebal(){
+  // 更新每行"调整后"单元格
+  rebalRows.forEach((r, i) => {
+    const cell = document.querySelector(`[data-after='${i}']`);
+    if (!cell) return;
+    const newAfter = r.base + r.delta*10000;
+    cell.className = newAfter < 0 ? 'neg' : '';
+    cell.style.textAlign = 'right';
+    cell.textContent = fmtWan(newAfter, false);
+  });
+
+  // 计算指标
+  let newExp = 0, newCashDelta = 0, newStockValue = 0;
+  rebalRows.forEach(r => {
+    const v = r.base + r.delta*10000;
+    newExp += v * r.beta;
+    newCashDelta -= r.delta*10000;          // 加仓 → 现金减；减仓 → 现金加
+    newStockValue += v;
+  });
+  const newCash  = D.cash + newCashDelta;
+  const newTotal = newStockValue + newCash;
+  const newEq    = newTotal - D.debt;
+  const newLev   = newEq > 0 ? newExp / newEq : Infinity;
+  const stockPct = newTotal > 0 ? (newStockValue / newTotal) * 100 : 0;
+
+  const oldExp = D.exp, oldEq = D.eq, oldLev = oldEq>0?oldExp/oldEq:0;
+  const oldCash = D.cash, oldTotal = D.total;
+
+  function pair(label, oldV, newV, fmt){
+    const dv = newV - oldV;
+    const dStr = dv === 0 ? '' :
+      ` <span class='${cls(dv)}' style='font-size:12px'>(${dv>0?'+':''}${fmt(dv)})</span>`;
+    return `<span>${label}</span><span>${fmt(newV)}${dStr}</span>`;
+  }
+  const fW = v => (v/10000).toFixed(1)+'万';
+  const fL = v => v.toFixed(2)+'x';
+  const fP = v => v.toFixed(1)+'%';
+
+  const cashLabel = newCash < 0 ? `现金 <span class='neg' style='font-size:12px'>(不足!)</span>` : '现金';
+  document.getElementById('rebalKv').innerHTML =
+    pair('总资产',       oldTotal, newTotal, fW) +
+    pair(cashLabel,      oldCash,  newCash,  fW) +
+    pair('有效纳指暴露', oldExp,   newExp,   fW) +
+    pair('杠杆倍数',     oldLev,   newLev,   fL) +
+    pair('净资产',       oldEq,    newEq,    fW) +
+    `<span>股票占比</span><span>${fP(stockPct)}</span>`;
+
+  // 压力测试：调仓后净资产 / 调仓后总盈亏 / 对比当前（净资产）
+  function plCell(v) {
+    const s = v>=0?'+':''; return `<td class='${cls(v)}'>${s}${(v/10000).toFixed(1)}万</td>`;
+  }
+  let h = '<tr><th>场景</th><th>调仓后净资产</th><th>调仓后总盈亏</th><th>对比当前</th></tr>';
+  D.up_pcts.forEach(up => {
+    const v   = newEq + newExp * up/100;
+    const pl  = D.base_ret + (v - D.eq);
+    const cmp = v - (oldEq + oldExp * up/100);
+    h += `<tr><td>涨${up}%</td><td>${fW(v)}</td>${plCell(pl)}${plCell(cmp)}</tr>`;
+  });
+  const curPL = D.base_ret + (newEq - D.eq);
+  h += `<tr class='current'><td>当前</td><td>${fW(newEq)}</td>${plCell(curPL)}<td>—</td></tr>`;
+  D.down_pcts.forEach(dn => {
+    const v   = newEq - newExp * dn/100;
+    const pl  = D.base_ret + (v - D.eq);
+    const cmp = v - (oldEq - oldExp * dn/100);
+    const ac  = (dn===20||dn===30) ? 'alert' : '';
+    h += `<tr class='${ac}'><td>跌${dn}%</td><td>${fW(v)}</td>${plCell(pl)}${plCell(cmp)}</tr>`;
+  });
+  document.getElementById('rebalStress').innerHTML = h;
+}
+
+document.getElementById('rebalAdd').addEventListener('click', () => {
+  rebalRows.push({location:'新增持仓', name:'新标的', symbol:'', market:'us',
+                  beta:1.0, base:0, delta:0, isNew:true});
+  buildRebalTable();
+});
+document.getElementById('rebalReset').addEventListener('click', () => {
+  rebalRows.length = 0;
+  D.assets.forEach(a => rebalRows.push({
+    location:a.location, name:a.name, symbol:a.symbol, market:a.market,
+    beta:a.beta, base:a.value, delta:0, isNew:false
+  }));
+  buildRebalTable();
+});
+buildRebalTable();
 """)
     out.append("</script>")
     out.append("</body></html>")
