@@ -243,19 +243,25 @@ def w(v: float) -> str:
 def fmt_pct(v: float) -> str:
     return f"{'+' if v >= 0 else ''}{v:.1f}%"
 
+def fmt_pct_w(v: float) -> str:
+    return f"{'+' if v >= 0 else ''}{v / 10000:.1f}万"
+
 # ── 模块3：涨跌场景 ──────────────────────────────────────────────────────────
 def print_stress_test(p: dict) -> None:
     eq, exp = p["net_equity"], p["nasdaq_exp"]
     print("\n【涨跌场景】")
+    print(f"  {'':6}  {'净资产':>7}  {'净资产变化%':>9}  {'盈亏金额':>8}")
     for up in UP_PCTS:
         new_eq = eq + exp * up / 100
         chg    = (new_eq / eq - 1) * 100
-        print(f"  涨{up:>2}% → 净资产 {w(new_eq):>7}  ({fmt_pct(chg):>7})")
+        diff   = new_eq - eq
+        print(f"  涨{up:>2}%  {w(new_eq):>7}  {fmt_pct(chg):>9}  {fmt_pct_w(diff):>8}")
     print(f"  ── 当前 ──  净资产 {w(eq)}")
     for dn in DOWN_PCTS:
         new_eq = eq - exp * dn / 100
         chg    = (new_eq / eq - 1) * 100
-        print(f"  跌{dn:>2}% → 净资产 {w(new_eq):>7}  ({fmt_pct(chg):>7})")
+        diff   = new_eq - eq
+        print(f"  跌{dn:>2}%  {w(new_eq):>7}  {fmt_pct(chg):>9}  {fmt_pct_w(diff):>8}")
 
 # ── 模块5：仓位模拟 ──────────────────────────────────────────────────────────
 def print_position_sim(p: dict, amounts_wan: list[float]) -> None:
