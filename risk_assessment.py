@@ -186,16 +186,31 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
     net_equity    = total_cny - total_debt
     leverage      = nasdaq_exp / net_equity if net_equity > 0 else float("inf")
 
+    # 历史总盈亏（来自 accountReturnBaselines）
+    return_details = []
+    total_return   = 0.0
+    last_cal_ts    = 0
+    for b in data.get("accountReturnBaselines", []):
+        ext = float(b.get("external_total_return_cny") or 0.0)
+        return_details.append({"location": b.get("location", ""), "amount": ext})
+        total_return += ext
+        ts = b.get("calibration_timestamp") or 0
+        if ts > last_cal_ts:
+            last_cal_ts = ts
+
     return {
-        "total_cny":    total_cny,
-        "total_debt":   total_debt,
-        "net_equity":   net_equity,
-        "nasdaq_exp":   nasdaq_exp,
-        "leverage":     leverage,
-        "cash_cny":     cash_cny,
-        "loan_details": loan_details,
+        "total_cny":     total_cny,
+        "total_debt":    total_debt,
+        "net_equity":    net_equity,
+        "nasdaq_exp":    nasdaq_exp,
+        "leverage":      leverage,
+        "cash_cny":      cash_cny,
+        "loan_details":  loan_details,
         "total_monthly": total_monthly,
         "months_of_cash": cash_cny / total_monthly if total_monthly > 0 else float("inf"),
+        "return_details": return_details,
+        "total_return":   total_return,
+        "last_cal_ts":    last_cal_ts,
     }
 
 # ── 风险评分 ──────────────────────────────────────────────────────────────────
@@ -335,6 +350,16 @@ def main() -> None:
     print(f"  杠杆倍数:     {p['leverage']:.2f}x")
     print(f"  现金储备:     {w(p['cash_cny'])}")
     print(f"  汇率参考:     USD {fx['USD']:.2f}  HKD {fx['HKD']:.4f}")
+
+    # ── 模块1.5：历史总盈亏 ──
+    if p["return_details"]:
+        print("\n【历史总盈亏（券商对账单口径）】")
+        for r in sorted(p["return_details"], key=lambda x: -x["amount"]):
+            print(f"  {r['location']:<10}  {fmt_pct_w(r['amount']):>8}")
+        print(f"  {'合计':<10}  {fmt_pct_w(p['total_return']):>8}")
+        if p["last_cal_ts"]:
+            cal_str = datetime.fromtimestamp(p["last_cal_ts"] / 1000).strftime("%Y-%m-%d")
+            print(f"  最后校准日期: {cal_str}")
 
     # ── 模块2：市场估值 + 风险等级 ──
     manual_fpe = load_forward_pe()
