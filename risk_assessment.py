@@ -272,7 +272,7 @@ def print_position_sim(p: dict, amounts_wan: list[float]) -> None:
     sorted_amts = sorted(amounts_wan)
     all_amts    = [0.0] + sorted_amts  # 0 = 当前
 
-    cw = 11  # 每列宽度
+    cw = 16  # 每列宽度（含 净资产+盈亏）
 
     def col_label(a: float) -> str:
         if a == 0.0:
@@ -281,6 +281,10 @@ def print_position_sim(p: dict, amounts_wan: list[float]) -> None:
 
     def row(label: str, values: list[str]) -> None:
         print(f"  {label:<14}" + "".join(f"{v:>{cw}}" for v in values))
+
+    def fmt_cell(new_eq: float) -> str:
+        diff = new_eq - eq
+        return f"{w(new_eq)} {fmt_pct_w(diff)}"
 
     # 表头
     row("", [col_label(a) for a in all_amts])
@@ -294,12 +298,12 @@ def print_position_sim(p: dict, amounts_wan: list[float]) -> None:
 
     # 跌幅行
     for dn in DOWN_PCTS:
-        vals = [w(eq + (exp + a * 10000) * (-dn / 100)) for a in all_amts]
+        vals = [fmt_cell(eq + (exp + a * 10000) * (-dn / 100)) for a in all_amts]
         row(f"跌{dn:>2}%净资产", vals)
 
     # 涨幅行
     for up in UP_PCTS:
-        vals = [w(eq + (exp + a * 10000) * (up / 100)) for a in all_amts]
+        vals = [fmt_cell(eq + (exp + a * 10000) * (up / 100)) for a in all_amts]
         row(f"涨{up:>2}%净资产", vals)
 
 # ── 主函数 ────────────────────────────────────────────────────────────────────
