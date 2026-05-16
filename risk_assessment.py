@@ -499,20 +499,6 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
                    f"<td class='neg'>{chg:.1f}%</td>{_td_num(total)}</tr>")
     out.append("</table></div>")
 
-    # 月供压力
-    out.append("<div class='card'><h2 style='margin-top:0'>贷款月供压力</h2>")
-    out.append("<table><tr><th>贷款</th><th>剩余本金</th><th>月供</th></tr>")
-    for ld in p["loan_details"]:
-        out.append(f"<tr><td>{ld['name']}</td>"
-                   f"<td>{ld['remaining']/10000:.1f}万</td>"
-                   f"<td>{ld['monthly']:,.0f} 元</td></tr>")
-    out.append(f"<tr class='current'><td>合计</td>"
-               f"<td>{p['total_debt']/10000:.1f}万</td>"
-               f"<td>{p['total_monthly']:,.0f} 元</td></tr>")
-    out.append("</table>")
-    out.append(f"<div class='subtle' style='margin-top:8px'>"
-               f"现金可撑 {p['months_of_cash']:.0f} 个月（约 {p['months_of_cash']/12:.1f} 年）</div></div>")
-
     # 仓位模拟（拖动滑块）
     out.append("""
 <div class='card'>
@@ -535,6 +521,20 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
   </div>
 </div>
 """)
+
+    # 月供压力（放在仓位模拟之后）
+    out.append("<div class='card'><h2 style='margin-top:0'>贷款月供压力</h2>")
+    out.append("<table><tr><th>贷款</th><th>剩余本金</th><th>月供</th></tr>")
+    for ld in p["loan_details"]:
+        out.append(f"<tr><td>{ld['name']}</td>"
+                   f"<td>{ld['remaining']/10000:.1f}万</td>"
+                   f"<td>{ld['monthly']:,.0f} 元</td></tr>")
+    out.append(f"<tr class='current'><td>合计</td>"
+               f"<td>{p['total_debt']/10000:.1f}万</td>"
+               f"<td>{p['total_monthly']:,.0f} 元</td></tr>")
+    out.append("</table>")
+    out.append(f"<div class='subtle' style='margin-top:8px'>"
+               f"现金可撑 {p['months_of_cash']:.0f} 个月（约 {p['months_of_cash']/12:.1f} 年）</div></div>")
 
     # 嵌入数据 + JS
     data_js = json.dumps({
@@ -695,15 +695,7 @@ def main() -> None:
     # ── 模块3：涨跌场景 ──
     print_stress_test(p)
 
-    # ── 模块4：月供压力 ──
-    print("\n【贷款月供压力】")
-    for ld in p["loan_details"]:
-        print(f"  {ld['name']:<16} 余额 {w(ld['remaining'])}  月供 {ld['monthly']:,.0f} 元")
-    print(f"  {'合计':<16} 余额 {w(p['total_debt'])}  月供 {p['total_monthly']:,.0f} 元")
-    months = p["months_of_cash"]
-    print(f"  现金可撑:     {months:.0f} 个月（约 {months / 12:.1f} 年）")
-
-    # ── 模块5：仓位模拟 ──
+    # ── 模块4：仓位模拟 ──
     print("\n【仓位模拟】")
     print("  输入调仓金额（万元，正=加仓，负=减仓，空格分隔），输入 q 退出")
     print("  示例: -20 -10 -5 5 10 20")
@@ -723,6 +715,14 @@ def main() -> None:
             print()
         except ValueError:
             print("  输入无效，请输入数字（例如 -10 5 20）")
+
+    # ── 模块5：月供压力 ──
+    print("\n【贷款月供压力】")
+    for ld in p["loan_details"]:
+        print(f"  {ld['name']:<16} 余额 {w(ld['remaining'])}  月供 {ld['monthly']:,.0f} 元")
+    print(f"  {'合计':<16} 余额 {w(p['total_debt'])}  月供 {p['total_monthly']:,.0f} 元")
+    months = p["months_of_cash"]
+    print(f"  现金可撑:     {months:.0f} 个月（约 {months / 12:.1f} 年）")
 
     # ── 更新 Forward PE ──
     cur_fpe_hint = f"当前: {forward_pe:.1f}" if forward_pe else "当前: 未设置"
