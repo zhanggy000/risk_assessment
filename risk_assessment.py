@@ -608,21 +608,8 @@ def main() -> None:
     html_mode = "--html" in args
     if html_mode:
         args.remove("--html")
-    sim_amounts = []
-    # 剩余参数：第一个 .json 视为路径，其余视为仓位模拟数字（仅 html 模式生效）
-    path = None
-    for a in args:
-        if a.endswith(".json"):
-            path = Path(a)
-        else:
-            try:
-                sim_amounts.append(float(a))
-            except ValueError:
-                pass
-    if path is None:
-        path = find_latest_json(BACKUP_DIR)
-    if html_mode and not sim_amounts:
-        sim_amounts = [-20, -10, -5, 5, 10, 20]
+    path = Path(args[0]) if args else find_latest_json(BACKUP_DIR)
+    sim_amounts = [-20, -10, -5, 5, 10, 20]   # HTML 默认值，浏览器中可改
 
     print(f"\n正在加载: {path.name}")
     print("正在获取市场数据...", end="", flush=True)
