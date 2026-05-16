@@ -19,7 +19,6 @@ BACKUP_DIR  = Path(
     "/Downloads/asset tracker/数据备份"
 )
 CACHE_FILE  = Path(__file__).parent / ".market_cache.json"
-CONFIG_FILE = Path(__file__).parent / ".config.json"
 CACHE_TTL   = 2 * 3600  # 2小时，单位秒
 
 UP_PCTS   = [5, 10, 15, 20, 25, 35, 40, 50]
@@ -76,37 +75,6 @@ def get_market_info() -> tuple[dict, dict, bool]:
     except Exception:
         pass
     return data["fx"], data["mkt"], False
-
-# ── 手动 Forward PE（持久存储，不随市场缓存过期）────────────────────────────
-def load_forward_pe() -> float | None:
-    try:
-        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        return cfg.get("forward_pe")
-    except Exception:
-        return None
-
-def save_forward_pe(value: float) -> None:
-    _save_config_key("forward_pe", value)
-
-def load_manual_return() -> float | None:
-    try:
-        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        return cfg.get("manual_total_return")
-    except Exception:
-        return None
-
-def save_manual_return(value: float) -> None:
-    _save_config_key("manual_total_return", value)
-
-def _save_config_key(key: str, value) -> None:
-    try:
-        cfg = {}
-        if CONFIG_FILE.exists():
-            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        cfg[key] = value
-        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
 
 # ── 贷款余额计算 ─────────────────────────────────────────────────────────────
 def calc_remaining_principal(loan: dict, today: date) -> float:
@@ -880,11 +848,7 @@ def main() -> None:
     cache_hint = "（缓存）" if from_cache else "（实时）"
     print(f" 完成 {cache_hint}\n")
 
-    # HTML 模式：手动盈亏覆盖
-    manual_ret_pre = load_manual_return()
-    if manual_ret_pre is not None:
-        p["total_return"] = manual_ret_pre
-    forward_pe_pre = mkt.get("forward_pe") or load_forward_pe()
+    forward_pe_pre = mkt.get("forward_pe")
 
     if html_mode:
         score, reasons = overall_risk(p, mkt)
@@ -912,35 +876,24 @@ def main() -> None:
     print(f"  汇率参考:     USD {fx['USD']:.2f}  HKD {fx['HKD']:.4f}")
 
     # ── 模块1.5：实时总盈亏 ──
-    manual_ret = load_manual_return()
-    if manual_ret is not None:
-        p["total_return"] = manual_ret
-    if p["return_details"] or manual_ret is not None:
+    if p["return_details"]:
         print("\n【实时总盈亏】")
-        if manual_ret is not None:
-            print(f"  合计:        {fmt_pct_w(manual_ret)}  (手动)")
-        else:
-            for r in sorted(p["return_details"], key=lambda x: -x["amount"]):
-                print(f"  {r['location']:<10}  {fmt_pct_w(r['amount']):>8}  "
-                      f"(基准 {fmt_pct_w(r['baseline'])} + 已记录 {fmt_pct_w(r['recorded'])})")
-            print(f"  {'─'*60}")
-            print(f"  {'合计实时总盈亏':<10}     {fmt_pct_w(p['total_return']):>8}")
+        for r in sorted(p["return_details"], key=lambda x: -x["amount"]):
+            print(f"  {r['location']:<10}  {fmt_pct_w(r['amount']):>8}  "
+                  f"(基准 {fmt_pct_w(r['baseline'])} + 已记录 {fmt_pct_w(r['recorded'])})")
+        print(f"  {'─'*60}")
+        print(f"  {'合计实时总盈亏':<10}     {fmt_pct_w(p['total_return']):>8}")
         if p["last_cal_ts"]:
             cal_str = datetime.fromtimestamp(p["last_cal_ts"] / 1000).strftime("%Y-%m-%d")
             print(f"  最近校准日期: {cal_str}")
 
     # ── 模块2：市场估值 + 风险等级 ──
-    manual_fpe = load_forward_pe()
-    forward_pe = mkt.get("forward_pe") or manual_fpe  # 自动优先，无则用手动
+    forward_pe = mkt.get("forward_pe")
 
     print("\n【市场估值（QQQ）】")
-    pe_str  = f"{mkt['pe']:.1f}" if mkt["pe"] else "获取失败"
-    if forward_pe:
-        fpe_label = "(手动)" if not mkt.get("forward_pe") else ""
-        fpe_str = f"{forward_pe:.1f} {fpe_label}".strip()
-    else:
-        fpe_str = "未设置（见提示）"
-    fh_str  = f"{mkt['from_high_pct']:.1f}%" if mkt["from_high_pct"] is not None else "获取失败"
+    pe_str  = f"{mkt['pe']:.1f}" if mkt["pe"] else "--"
+    fpe_str = f"{forward_pe:.1f}" if forward_pe else "--"
+    fh_str  = f"{mkt['from_high_pct']:.1f}%" if mkt["from_high_pct"] is not None else "--"
     print(f"  市盈率 TTM:   {pe_str}")
     print(f"  预期市盈率:   {fpe_str}")
     print(f"  距52周高点:   {fh_str}")
@@ -981,31 +934,6 @@ def main() -> None:
     print(f"  {'合计':<16} 余额 {w(p['total_debt'])}  月供 {p['total_monthly']:,.0f} 元")
     months = p["months_of_cash"]
     print(f"  现金可撑:     {months:.0f} 个月（约 {months / 12:.1f} 年）")
-
-    # ── 更新 Forward PE ──
-    cur_fpe_hint = f"当前: {forward_pe:.1f}" if forward_pe else "当前: 未设置"
-    print(f"\n【更新预期市盈率 Forward PE】（{cur_fpe_hint}，参考 multpl.com/nasdaq-pe-ratio）")
-    try:
-        raw = input("  输入新数值更新，直接回车跳过: ").strip()
-        if raw:
-            save_forward_pe(float(raw))
-            print(f"  已保存 Forward PE: {float(raw):.1f}")
-    except (ValueError, EOFError):
-        pass
-
-    # ── 更新手动总盈亏（覆盖估算值）──
-    print(f"\n【更新实时总盈亏】（当前: {fmt_pct_w(p['total_return'])}）")
-    print("  从你的 app 直接读取更准确，输入 CNY 金额覆盖估算（输入 auto 恢复自动）")
-    try:
-        raw = input("  输入新数值/auto，直接回车跳过: ").strip()
-        if raw.lower() == "auto":
-            _save_config_key("manual_total_return", None)
-            print("  已恢复自动估算")
-        elif raw:
-            save_manual_return(float(raw))
-            print(f"  已保存实时总盈亏: {fmt_pct_w(float(raw))}")
-    except (ValueError, EOFError):
-        pass
 
     print(f"\n{sep}\n")
 
