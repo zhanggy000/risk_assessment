@@ -513,35 +513,92 @@ def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
     out.append(f"<div class='subtle' style='margin-top:8px'>"
                f"现金可撑 {p['months_of_cash']:.0f} 个月（约 {p['months_of_cash']/12:.1f} 年）</div></div>")
 
-    # 仓位模拟
-    if sim_amounts:
-        out.append("<div class='card'><h2 style='margin-top:0'>仓位模拟</h2>")
-        all_amts = [0.0] + sorted(sim_amounts)
-        labels   = ["当前" if a == 0 else f"{'减仓' if a<0 else '加仓'}{abs(a):.0f}万"
-                    for a in all_amts]
-        out.append("<table><tr><th>指标</th>")
-        for lab, a in zip(labels, all_amts):
-            cls = "current" if a == 0 else ""
-            out.append(f"<th class='{cls}'>{lab}</th>")
-        out.append("</tr>")
+    # 仓位模拟（交互式）
+    out.append("<div class='card'><h2 style='margin-top:0'>仓位模拟</h2>")
+    out.append("<div style='margin-bottom:10px;font-size:13px;color:#515154'>"
+               "调仓金额（万元，正=加仓，负=减仓，空格分隔，回车更新）</div>")
+    default_input = " ".join(f"{a:g}" for a in sim_amounts) if sim_amounts else "-20 -10 -5 5 10 20"
+    out.append(f"<input id='simInput' value='{default_input}' "
+               "style='width:60%;padding:8px 12px;border:1px solid #d2d2d7;"
+               "border-radius:8px;font-size:14px;font-family:monospace' />")
+    out.append(" <button onclick='renderSim()' "
+               "style='padding:8px 18px;background:#0071e3;color:#fff;border:none;"
+               "border-radius:8px;font-size:14px;cursor:pointer'>更新</button>")
+    out.append("<div id='simTable' style='margin-top:14px'></div>")
+    out.append("<div class='subtle' style='margin-top:6px'>"
+               "盈亏 = 当前实时盈亏 + 场景变化（暴露 × 涨跌%）</div></div>")
 
-        def srow(label: str, fmt):
-            out.append(f"<tr><td>{label}</td>")
-            for a in all_amts:
-                out.append(fmt(a))
-            out.append("</tr>")
+    # 嵌入数据 + JS
+    data_js = json.dumps({
+        "eq":       eq,
+        "exp":      exp,
+        "base_ret": base_ret,
+        "up_pcts":  UP_PCTS,
+        "down_pcts": DOWN_PCTS,
+    })
+    out.append(f"<script>const D={data_js};\n")
+    out.append(r"""
+function fmtPL(v) {
+  const sign = v >= 0 ? '+' : '';
+  const cls  = v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+  return `<td class="${cls}">${sign}${(v/10000).toFixed(1)}万</td>`;
+}
+function fmtVal(v, unit='万') {
+  return `<td>${(v/10000).toFixed(1)}${unit}</td>`;
+}
+function renderSim() {
+  const raw = document.getElementById('simInput').value.trim();
+  const amts = raw ? raw.split(/\s+/).map(parseFloat).filter(x => !isNaN(x)) : [];
+  amts.sort((a,b) => a-b);
+  const all = [0, ...amts];
+  const labels = all.map(a => a === 0 ? '当前' : (a < 0 ? '减仓' : '加仓') + Math.abs(a) + '万');
 
-        srow("有效纳指暴露", lambda a: f"<td>{(exp + a*10000)/10000:.1f}万</td>")
-        srow("杠杆倍数",     lambda a: f"<td>{(exp + a*10000)/eq:.2f}x</td>")
-        for dn in DOWN_PCTS:
-            srow(f"跌{dn}%",
-                 lambda a, dn=dn: _td_num(base_ret + (exp + a*10000) * (-dn/100)))
-        for up in UP_PCTS:
-            srow(f"涨{up}%",
-                 lambda a, up=up: _td_num(base_ret + (exp + a*10000) * (up/100)))
-        out.append("</table>")
-        out.append(f"<div class='subtle' style='margin-top:6px'>盈亏 = 当前实时盈亏 + 场景变化（净资产 + 杠杆暴露 × 涨跌%）</div></div>")
+  let html = '<table><tr><th>指标</th>';
+  all.forEach((a, i) => {
+    const cls = a === 0 ? 'current' : '';
+    html += `<th class="${cls}">${labels[i]}</th>`;
+  });
+  html += '</tr>';
 
+  // 有效纳指暴露
+  html += '<tr><td>有效纳指暴露</td>';
+  all.forEach(a => { html += fmtVal(D.exp + a*10000); });
+  html += '</tr>';
+
+  // 杠杆倍数
+  html += '<tr><td>杠杆倍数</td>';
+  all.forEach(a => { html += `<td>${((D.exp + a*10000)/D.eq).toFixed(2)}x</td>`; });
+  html += '</tr>';
+
+  // 跌幅
+  D.down_pcts.forEach(dn => {
+    html += `<tr><td>跌${dn}%</td>`;
+    all.forEach(a => {
+      const total = D.base_ret + (D.exp + a*10000) * (-dn/100);
+      html += fmtPL(total);
+    });
+    html += '</tr>';
+  });
+
+  // 涨幅
+  D.up_pcts.forEach(up => {
+    html += `<tr><td>涨${up}%</td>`;
+    all.forEach(a => {
+      const total = D.base_ret + (D.exp + a*10000) * (up/100);
+      html += fmtPL(total);
+    });
+    html += '</tr>';
+  });
+
+  html += '</table>';
+  document.getElementById('simTable').innerHTML = html;
+}
+document.getElementById('simInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') renderSim();
+});
+renderSim();
+""")
+    out.append("</script>")
     out.append("</body></html>")
     return "".join(out)
 
