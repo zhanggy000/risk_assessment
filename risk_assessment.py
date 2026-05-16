@@ -38,7 +38,7 @@ def load_data(path: Path) -> dict:
 # ── 汇率 + 市场数据（带2小时缓存）────────────────────────────────────────────
 def _fetch_live() -> dict:
     fx  = {"HKD": 0.924, "USD": 7.25}
-    mkt = {"pe": None, "from_high_pct": None}
+    mkt = {"pe": None, "forward_pe": None, "from_high_pct": None}
     try:
         hkd = yf.Ticker("HKDCNY=X").fast_info["last_price"]
         usd = yf.Ticker("USDCNY=X").fast_info["last_price"]
@@ -49,9 +49,11 @@ def _fetch_live() -> dict:
     try:
         info = yf.Ticker("QQQ").info
         pe   = info.get("trailingPE")
+        fpe  = info.get("forwardPE")
         h52  = info.get("fiftyTwoWeekHigh")
         cur  = info.get("currentPrice") or info.get("regularMarketPrice")
-        if pe: mkt["pe"] = float(pe)
+        if pe:  mkt["pe"]         = float(pe)
+        if fpe: mkt["forward_pe"] = float(fpe)
         if h52 and cur:
             mkt["from_high_pct"] = (float(cur) / float(h52) - 1) * 100
     except Exception:
@@ -307,9 +309,11 @@ def main() -> None:
 
     # ── 模块2：市场估值 + 风险等级 ──
     print("\n【市场估值（QQQ）】")
-    pe_str = f"{mkt['pe']:.1f}" if mkt["pe"] else "获取失败"
-    fh_str = f"{mkt['from_high_pct']:.1f}%" if mkt["from_high_pct"] is not None else "获取失败"
-    print(f"  市盈率(PE):   {pe_str}")
+    pe_str  = f"{mkt['pe']:.1f}"         if mkt["pe"]         else "获取失败"
+    fpe_str = f"{mkt['forward_pe']:.1f}" if mkt["forward_pe"] else "ETF 暂不支持"
+    fh_str  = f"{mkt['from_high_pct']:.1f}%" if mkt["from_high_pct"] is not None else "获取失败"
+    print(f"  市盈率 TTM:   {pe_str}")
+    print(f"  预期市盈率:   {fpe_str}")
     print(f"  距52周高点:   {fh_str}")
 
     score, reasons = overall_risk(p, mkt)
