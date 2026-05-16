@@ -389,12 +389,183 @@ def print_position_sim(p: dict, amounts_wan: list[float]) -> None:
         vals = [fmt_cell(eq + (exp + a * 10000) * (up / 100)) for a in all_amts]
         row(f"涨{up:>2}%净资产", vals)
 
+# ── HTML 报告生成 ─────────────────────────────────────────────────────────────
+HTML_CSS = """
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Helvetica Neue',sans-serif;
+     max-width:1100px;margin:24px auto;padding:0 16px;color:#1d1d1f;background:#f5f5f7;}
+h1{font-size:22px;margin:0 0 6px}
+h2{font-size:16px;margin:28px 0 10px;padding-left:8px;border-left:4px solid #0071e3}
+.meta{color:#86868b;font-size:13px;margin-bottom:18px}
+.card{background:#fff;border-radius:12px;padding:16px 20px;margin-bottom:16px;
+      box-shadow:0 1px 3px rgba(0,0,0,.06)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px 10px;text-align:right;border-bottom:1px solid #f0f0f3}
+th{background:#fafafc;font-weight:500;color:#515154}
+td:first-child,th:first-child{text-align:left}
+tr.current td{background:#fffceb;font-weight:600}
+.pos{color:#0a8a3a}
+.neg{color:#d70015}
+.risk{display:inline-block;padding:3px 10px;border-radius:8px;font-weight:600;font-size:13px}
+.r0{background:#d4edda;color:#0a8a3a}
+.r1{background:#fff3cd;color:#806100}
+.r2{background:#fee3c0;color:#a04500}
+.r3{background:#f8d7da;color:#d70015}
+.kv{display:grid;grid-template-columns:auto 1fr;column-gap:24px;row-gap:6px;font-size:13.5px}
+.kv span:nth-child(odd){color:#86868b}
+.kv span:nth-child(even){font-weight:500}
+.subtle{color:#86868b;font-size:11px}
+"""
+
+def _cls(v: float) -> str:
+    return "pos" if v > 0 else "neg" if v < 0 else ""
+
+def _td_num(v: float, suffix: str = "万", sign: bool = True) -> str:
+    s = ("+" if sign and v > 0 else "") + f"{v/10000:.1f}{suffix}"
+    return f'<td class="{_cls(v)}">{s}</td>'
+
+def generate_html(p: dict, fx: dict, mkt: dict, forward_pe, score: int,
+                  reasons: list, sim_amounts: list[float]) -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    out = [f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+           f"<title>持仓风险评估报告 {now}</title><style>{HTML_CSS}</style></head><body>"]
+    out.append(f"<h1>持仓风险评估报告</h1>")
+    out.append(f"<div class='meta'>{now}　·　USD {fx['USD']:.2f}　HKD {fx['HKD']:.4f}</div>")
+
+    # 持仓快照
+    out.append("<div class='card'><h2 style='margin-top:0'>持仓快照</h2><div class='kv'>")
+    pairs = [
+        ("总资产", f"{p['total_cny']/10000:.1f} 万"),
+        ("总负债", f"{p['total_debt']/10000:.1f} 万"),
+        ("净资产", f"{p['net_equity']/10000:.1f} 万"),
+        ("有效纳指暴露", f"{p['nasdaq_exp']/10000:.1f} 万"),
+        ("杠杆倍数", f"{p['leverage']:.2f}x"),
+        ("现金储备", f"{p['cash_cny']/10000:.1f} 万"),
+    ]
+    for k, v in pairs:
+        out.append(f"<span>{k}</span><span>{v}</span>")
+    out.append("</div></div>")
+
+    # 实时总盈亏
+    if p["return_details"]:
+        out.append("<div class='card'><h2 style='margin-top:0'>实时总盈亏</h2>")
+        out.append("<table><tr><th>账户</th><th>合计</th><th>基准</th><th>App 已记录</th></tr>")
+        for r in sorted(p["return_details"], key=lambda x: -x["amount"]):
+            out.append(f"<tr><td>{r['location']}</td>")
+            out.append(_td_num(r['amount']))
+            out.append(_td_num(r['baseline']))
+            out.append(_td_num(r['recorded']))
+            out.append("</tr>")
+        out.append(f"<tr class='current'><td>合计</td>{_td_num(p['total_return'])}<td colspan='2'></td></tr>")
+        out.append("</table>")
+        if p["last_cal_ts"]:
+            cal_str = datetime.fromtimestamp(p["last_cal_ts"]/1000).strftime("%Y-%m-%d")
+            out.append(f"<div class='subtle' style='margin-top:6px'>最近校准: {cal_str}</div>")
+        out.append("</div>")
+
+    # 市场估值 + 风险等级
+    pe_s  = f"{mkt['pe']:.1f}"      if mkt["pe"]      else "—"
+    fpe_s = f"{forward_pe:.1f}"     if forward_pe     else "—"
+    fh_s  = f"{mkt['from_high_pct']:.1f}%" if mkt.get('from_high_pct') is not None else "—"
+    labels = ["低", "中", "高", "极高"]
+    out.append("<div class='card'><h2 style='margin-top:0'>市场估值 & 风险等级</h2>")
+    out.append(f"<div class='kv'>"
+               f"<span>市盈率 TTM</span><span>{pe_s}</span>"
+               f"<span>预期市盈率</span><span>{fpe_s}</span>"
+               f"<span>距52周高点</span><span>{fh_s}</span></div>")
+    out.append(f"<div style='margin-top:14px'>综合风险等级 "
+               f"<span class='risk r{score}'>{labels[score]}</span></div>")
+    out.append("<ul style='margin:8px 0 0;padding-left:20px;color:#515154;font-size:13px'>")
+    for r in reasons:
+        out.append(f"<li>{r}</li>")
+    out.append("</ul></div>")
+
+    # 涨跌场景
+    eq, exp, base_ret = p["net_equity"], p["nasdaq_exp"], p["total_return"]
+    out.append("<div class='card'><h2 style='margin-top:0'>涨跌场景</h2>")
+    out.append("<table><tr><th>场景</th><th>净资产</th><th>净资产变化%</th><th>实时总盈亏</th></tr>")
+    for up in UP_PCTS:
+        new_eq = eq + exp * up / 100
+        chg    = (new_eq / eq - 1) * 100
+        total  = base_ret + (new_eq - eq)
+        out.append(f"<tr><td>涨{up}%</td><td>{new_eq/10000:.1f}万</td>"
+                   f"<td class='pos'>+{chg:.1f}%</td>{_td_num(total)}</tr>")
+    out.append(f"<tr class='current'><td>当前</td><td>{eq/10000:.1f}万</td>"
+               f"<td>—</td>{_td_num(base_ret)}</tr>")
+    for dn in DOWN_PCTS:
+        new_eq = eq - exp * dn / 100
+        chg    = (new_eq / eq - 1) * 100
+        total  = base_ret + (new_eq - eq)
+        out.append(f"<tr><td>跌{dn}%</td><td>{new_eq/10000:.1f}万</td>"
+                   f"<td class='neg'>{chg:.1f}%</td>{_td_num(total)}</tr>")
+    out.append("</table></div>")
+
+    # 月供压力
+    out.append("<div class='card'><h2 style='margin-top:0'>贷款月供压力</h2>")
+    out.append("<table><tr><th>贷款</th><th>剩余本金</th><th>月供</th></tr>")
+    for ld in p["loan_details"]:
+        out.append(f"<tr><td>{ld['name']}</td>"
+                   f"<td>{ld['remaining']/10000:.1f}万</td>"
+                   f"<td>{ld['monthly']:,.0f} 元</td></tr>")
+    out.append(f"<tr class='current'><td>合计</td>"
+               f"<td>{p['total_debt']/10000:.1f}万</td>"
+               f"<td>{p['total_monthly']:,.0f} 元</td></tr>")
+    out.append("</table>")
+    out.append(f"<div class='subtle' style='margin-top:8px'>"
+               f"现金可撑 {p['months_of_cash']:.0f} 个月（约 {p['months_of_cash']/12:.1f} 年）</div></div>")
+
+    # 仓位模拟
+    if sim_amounts:
+        out.append("<div class='card'><h2 style='margin-top:0'>仓位模拟</h2>")
+        all_amts = [0.0] + sorted(sim_amounts)
+        labels   = ["当前" if a == 0 else f"{'减仓' if a<0 else '加仓'}{abs(a):.0f}万"
+                    for a in all_amts]
+        out.append("<table><tr><th>指标</th>")
+        for lab, a in zip(labels, all_amts):
+            cls = "current" if a == 0 else ""
+            out.append(f"<th class='{cls}'>{lab}</th>")
+        out.append("</tr>")
+
+        def srow(label: str, fmt):
+            out.append(f"<tr><td>{label}</td>")
+            for a in all_amts:
+                out.append(fmt(a))
+            out.append("</tr>")
+
+        srow("有效纳指暴露", lambda a: f"<td>{(exp + a*10000)/10000:.1f}万</td>")
+        srow("杠杆倍数",     lambda a: f"<td>{(exp + a*10000)/eq:.2f}x</td>")
+        for dn in DOWN_PCTS:
+            srow(f"跌{dn}%",
+                 lambda a, dn=dn: _td_num(base_ret + (exp + a*10000) * (-dn/100)))
+        for up in UP_PCTS:
+            srow(f"涨{up}%",
+                 lambda a, up=up: _td_num(base_ret + (exp + a*10000) * (up/100)))
+        out.append("</table>")
+        out.append(f"<div class='subtle' style='margin-top:6px'>盈亏 = 当前实时盈亏 + 场景变化（净资产 + 杠杆暴露 × 涨跌%）</div></div>")
+
+    out.append("</body></html>")
+    return "".join(out)
+
 # ── 主函数 ────────────────────────────────────────────────────────────────────
 def main() -> None:
-    if len(sys.argv) > 1:
-        path = Path(sys.argv[1])
-    else:
+    args = [a for a in sys.argv[1:]]
+    html_mode = "--html" in args
+    if html_mode:
+        args.remove("--html")
+    sim_amounts = []
+    # 剩余参数：第一个 .json 视为路径，其余视为仓位模拟数字（仅 html 模式生效）
+    path = None
+    for a in args:
+        if a.endswith(".json"):
+            path = Path(a)
+        else:
+            try:
+                sim_amounts.append(float(a))
+            except ValueError:
+                pass
+    if path is None:
         path = find_latest_json(BACKUP_DIR)
+    if html_mode and not sim_amounts:
+        sim_amounts = [-20, -10, -5, 5, 10, 20]
 
     print(f"\n正在加载: {path.name}")
     print("正在获取市场数据...", end="", flush=True)
@@ -403,6 +574,22 @@ def main() -> None:
     p    = calc_portfolio(data, fx)
     cache_hint = "（缓存）" if from_cache else "（实时）"
     print(f" 完成 {cache_hint}\n")
+
+    # HTML 模式：手动盈亏覆盖
+    manual_ret_pre = load_manual_return()
+    if manual_ret_pre is not None:
+        p["total_return"] = manual_ret_pre
+    forward_pe_pre = mkt.get("forward_pe") or load_forward_pe()
+
+    if html_mode:
+        score, reasons = overall_risk(p, mkt)
+        html = generate_html(p, fx, mkt, forward_pe_pre, score, reasons, sim_amounts)
+        out_path = Path(__file__).parent / f"report_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
+        out_path.write_text(html, encoding="utf-8")
+        print(f"HTML 报告已生成: {out_path}")
+        import subprocess
+        subprocess.run(["open", str(out_path)], check=False)
+        return
 
     sep = "=" * 56
     print(sep)
