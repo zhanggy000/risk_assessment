@@ -19,6 +19,7 @@ BACKUP_DIR  = Path(
     "/Downloads/asset tracker/数据备份"
 )
 CACHE_FILE  = Path(__file__).parent / ".market_cache.json"
+CONFIG_FILE = Path(__file__).parent / ".config.json"
 CACHE_TTL   = 2 * 3600  # 2小时，单位秒
 
 UP_PCTS   = [5, 10, 15, 20, 25, 35, 40, 50]
@@ -75,6 +76,24 @@ def get_market_info() -> tuple[dict, dict, bool]:
     except Exception:
         pass
     return data["fx"], data["mkt"], False
+
+# ── 手动 Forward PE（持久存储，不随市场缓存过期）────────────────────────────
+def load_forward_pe() -> float | None:
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return cfg.get("forward_pe")
+    except Exception:
+        return None
+
+def save_forward_pe(value: float) -> None:
+    try:
+        cfg = {}
+        if CONFIG_FILE.exists():
+            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        cfg["forward_pe"] = value
+        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 # ── 贷款余额计算 ─────────────────────────────────────────────────────────────
 def calc_remaining_principal(loan: dict, today: date) -> float:
@@ -308,9 +327,16 @@ def main() -> None:
     print(f"  汇率参考:     USD {fx['USD']:.2f}  HKD {fx['HKD']:.4f}")
 
     # ── 模块2：市场估值 + 风险等级 ──
+    manual_fpe = load_forward_pe()
+    forward_pe = mkt.get("forward_pe") or manual_fpe  # 自动优先，无则用手动
+
     print("\n【市场估值（QQQ）】")
-    pe_str  = f"{mkt['pe']:.1f}"         if mkt["pe"]         else "获取失败"
-    fpe_str = f"{mkt['forward_pe']:.1f}" if mkt["forward_pe"] else "ETF 暂不支持"
+    pe_str  = f"{mkt['pe']:.1f}" if mkt["pe"] else "获取失败"
+    if forward_pe:
+        fpe_label = "(手动)" if not mkt.get("forward_pe") else ""
+        fpe_str = f"{forward_pe:.1f} {fpe_label}".strip()
+    else:
+        fpe_str = "未设置（见提示）"
     fh_str  = f"{mkt['from_high_pct']:.1f}%" if mkt["from_high_pct"] is not None else "获取失败"
     print(f"  市盈率 TTM:   {pe_str}")
     print(f"  预期市盈率:   {fpe_str}")
@@ -352,6 +378,17 @@ def main() -> None:
             print()
         except ValueError:
             print("  输入无效，请输入数字（例如 -10 5 20）")
+
+    # ── 更新 Forward PE ──
+    cur_fpe_hint = f"当前: {forward_pe:.1f}" if forward_pe else "当前: 未设置"
+    print(f"\n【更新预期市盈率 Forward PE】（{cur_fpe_hint}，参考 multpl.com/nasdaq-pe-ratio）")
+    try:
+        raw = input("  输入新数值更新，直接回车跳过: ").strip()
+        if raw:
+            save_forward_pe(float(raw))
+            print(f"  已保存 Forward PE: {float(raw):.1f}")
+    except (ValueError, EOFError):
+        pass
 
     print(f"\n{sep}\n")
 
