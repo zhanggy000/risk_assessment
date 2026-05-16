@@ -206,36 +206,63 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
     net_equity    = total_cny - total_debt
     leverage      = nasdaq_exp / net_equity if net_equity > 0 else float("inf")
 
-    # 实时总盈亏 = 各账户校准时盈亏之和 + 组合自校准以来的市值变化
-    # （内部转账/买卖在组合层面自动抵消，比逐账户算更准）
+    # 实时总盈亏（口径同 Nq100 dashboard.historicalTotalInvestmentReturnCny）
+    # 每个有股票资产的账户：
+    #   account_return = baseline_return_cny + (last_snap - first_snap + 转账调整)
+    # 转账调整 = 转出金额 - 转入金额（按当前汇率换算）
     baselines       = data.get("accountReturnBaselines", [])
-    return_details  = []
-    external_sum    = 0.0
-    last_cal_ts     = 0
-    earliest_cal_ts = float("inf")
-    for b in baselines:
-        ext     = float(b.get("external_total_return_cny") or 0.0)
-        cal_ts  = b.get("calibration_timestamp") or 0
-        return_details.append({"location": b.get("location", ""), "external": ext})
-        external_sum += ext
-        if cal_ts > last_cal_ts:
-            last_cal_ts = cal_ts
-        if cal_ts and cal_ts < earliest_cal_ts:
-            earliest_cal_ts = cal_ts
+    all_snaps       = data.get("accountSnapshots", [])
+    all_flows       = data.get("cashFlows", [])
+    base_by_loc     = {b["location"]: b for b in baselines}
 
-    # 找校准时间附近的 portfolioSnapshot
-    portfolio_snaps = data.get("portfolioSnapshots", [])
-    cal_portfolio   = None
-    if earliest_cal_ts != float("inf") and portfolio_snaps:
-        # 取 timestamp >= earliest_cal_ts 中最早的（最贴近校准时刻的状态）
-        post = [s for s in portfolio_snaps if s.get("timestamp", 0) >= earliest_cal_ts]
-        if post:
-            cal_portfolio = min(post, key=lambda s: s["timestamp"])
-        else:
-            cal_portfolio = max(portfolio_snaps, key=lambda s: s["timestamp"])
+    # 列出"持有股票的账户"（symbol 非空）
+    stock_locs = sorted({
+        a["location"].strip() for a in data["assets"]
+        if a.get("symbol", "").strip() and a.get("location", "").strip()
+    })
 
-    post_cal_delta = (total_cny - cal_portfolio["gross_value_cny"]) if cal_portfolio else 0.0
-    total_return   = external_sum + post_cal_delta
+    def fx_mult(cur: str) -> float:
+        c = (cur or "cny").lower()
+        return fx["USD"] if c == "usd" else fx["HKD"] if c == "hkd" else 1.0
+
+    def app_recorded_for(loc: str) -> float:
+        rows = sorted(
+            [s for s in all_snaps if s.get("location") == loc],
+            key=lambda s: s["timestamp"],
+        )
+        if len(rows) < 2:
+            return 0.0
+        start_ts = rows[0]["timestamp"]
+        end_ts   = rows[-1]["timestamp"] + 1
+        adj = 0.0
+        for c in all_flows:
+            if c.get("type") != "transfer":
+                continue
+            ts = c.get("timestamp", 0)
+            if ts < start_ts or ts >= end_ts:
+                continue
+            amt_cny = abs(c.get("amount", 0)) * fx_mult(c.get("currency", "cny"))
+            if c.get("location") == loc:
+                adj += amt_cny
+            if c.get("to_location") == loc:
+                adj -= amt_cny
+        return rows[-1]["value_cny"] - rows[0]["value_cny"] + adj
+
+    return_details = []
+    total_return   = 0.0
+    last_cal_ts    = 0
+    for loc in stock_locs:
+        b           = base_by_loc.get(loc)
+        baseline    = float(b.get("baseline_return_cny") or 0.0) if b else 0.0
+        recorded    = app_recorded_for(loc)
+        amount      = baseline + recorded
+        return_details.append({
+            "location": loc, "baseline": baseline,
+            "recorded": recorded, "amount": amount,
+        })
+        total_return += amount
+        if b and b.get("calibration_timestamp", 0) > last_cal_ts:
+            last_cal_ts = b["calibration_timestamp"]
 
     return {
         "total_cny":     total_cny,
@@ -248,8 +275,6 @@ def calc_portfolio(data: dict, fx: dict) -> dict:
         "total_monthly": total_monthly,
         "months_of_cash": cash_cny / total_monthly if total_monthly > 0 else float("inf"),
         "return_details":  return_details,
-        "external_sum":    external_sum,
-        "post_cal_delta":  post_cal_delta,
         "total_return":    total_return,
         "last_cal_ts":     last_cal_ts,
     }
@@ -403,12 +428,11 @@ def main() -> None:
         if manual_ret is not None:
             print(f"  合计:        {fmt_pct_w(manual_ret)}  (手动)")
         else:
-            for r in sorted(p["return_details"], key=lambda x: -x["external"]):
-                print(f"  {r['location']:<10}  校准 {fmt_pct_w(r['external']):>8}")
-            print(f"  {'─'*44}")
-            print(f"  各账户校准时合计:    {fmt_pct_w(p['external_sum']):>8}")
-            print(f"  组合校准后市值变化:  {fmt_pct_w(p['post_cal_delta']):>8}")
-            print(f"  {'实时总盈亏':<10}    {fmt_pct_w(p['total_return']):>8}  (估算)")
+            for r in sorted(p["return_details"], key=lambda x: -x["amount"]):
+                print(f"  {r['location']:<10}  {fmt_pct_w(r['amount']):>8}  "
+                      f"(基准 {fmt_pct_w(r['baseline'])} + 已记录 {fmt_pct_w(r['recorded'])})")
+            print(f"  {'─'*60}")
+            print(f"  {'合计实时总盈亏':<10}     {fmt_pct_w(p['total_return']):>8}")
         if p["last_cal_ts"]:
             cal_str = datetime.fromtimestamp(p["last_cal_ts"] / 1000).strftime("%Y-%m-%d")
             print(f"  最近校准日期: {cal_str}")
